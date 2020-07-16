@@ -455,13 +455,11 @@ sqrt(sum((forecastm2$yhat[(nrow(train)+1):nrow(forecastm2)]-test$sales_volume)**
 
 
 # Final Forecast
-
 ```{r, warning=FALSE,message=FALSE}
 #preparing the data by product category level, will join back with "tsdf80" later 
 
 proddf <- tsdf80 %>% ungroup() %>% mutate(ds = order_purchase_timestamp, y = sales_volume) %>% 
                                 select (-c(order_purchase_timestamp,sales_volume,revenue)) 
-
 
 make_forecast <- function(df) {
   m <- prophet(growth="linear",
@@ -489,15 +487,35 @@ fcst <- proddf %>%
   do(make_forecast(.)) %>% 
   dplyr::select(ds, product_category_name_english, yhat)
 ```
-
-```{r, warning=FALSE}
+```{r}
+fcst <- fcst %>% mutate(ds=as.Date(ds))
 fcst
 ```
 
-```{r}
-fcst_actual_df <- inner_join(tsdf80,fcst, by=c("order_purchase_timestamp"="ds","product_category_name_english"), copy=FALSE)
-fcst_actual_df <- fcst_actual_df %>% mutate(lost_sales = ifelse(yhat-sales_volume < 0,0,abs(yhat-sales_volume)),
-                                             lost_revenue = ifelse(yhat-sales_volume < 0,0,abs(yhat-sales_volume))*revenue)
-sum(fcst_actual_df$lost_revenue)/nrow(fcst_actual_df)*365 #the average annual lost revenue saved
+
+```{r, warning=FALSE,message=FALSE}
 ```
 
+
+
+```{r}
+fcst_actual_df <- right_join(tsdf80,fcst, by=c("order_purchase_timestamp"="ds","product_category_name_english"), copy=FALSE)
+fc_act_noNA <- na.omit(fcst_actual_df) %>% mutate(lost_sales = ifelse(yhat-sales_volume < 0,0,abs(yhat-sales_volume)),
+                                             lost_revenue = ifelse(yhat-sales_volume < 0,0,abs(yhat-sales_volume))*revenue)
+sum(fc_act_noNA$lost_revenue)/nrow(fc_act_noNA)*365 #the average annual lost revenue saved
+```
+
+
+```{r, warning = FALSE, message=FALSE}
+fcst_actual_df %>%
+  group_by(order_purchase_timestamp) %>% summarise(actual = sum(sales_volume),
+                             forecast = sum(yhat)) %>%
+                                  gather(key = "type", value = "value", - order_purchase_timestamp) %>%
+  ggplot(aes(order_purchase_timestamp,value, color = type)) +
+  geom_line() + 
+  ggtitle("Sales Volume Forecast vs Actual from 2017 to 2018") +
+  scale_x_date(date_labels = "%m-%Y") +
+  scale_color_manual(values=c("#213ee2", "#06d997")) +
+  theme(plot.title = element_text(size = 22, face = "bold"))
+  
+```
