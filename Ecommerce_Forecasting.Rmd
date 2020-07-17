@@ -83,7 +83,7 @@ orderitem <- oi_df %>%
                      qty  = order_item_id) %>% dplyr::select(-order_item_id)
 
 master_df <- inner_join(inner_join(order,orderitem, by = "order_id", copy = FALSE),items_df, by = "product_id", copy = FALSE)
-head(master_df)
+tail(master_df,10)
 ```
 
 
@@ -146,12 +146,12 @@ autoplot(dc1_classical_add) +
 Let's zoom in on the time series a little bit to see the jump in black friday more closely based on each product category.
 Below is the time series plot for the top 3 product category. As we can see below, each product categories have different seasonality and they have different peak effect. With this analysis, I decided to do a bottom up forecast, meaning that I will create different models per each product category and sum it up at the end for the overall forecast. As for the items in each product category, I will allocate the forecast based on the their % of sales within the category, this is due to the idea that each product within the same category will more or less follow the same seasonality and trend.
 
-For this analysis, I will focus only on the product categories that make up the top 80% Sales (~11M in Average Annual Revenue). 
+For this analysis, I will focus only on the product categories that make up the top 80% Sales (~6.8M in Average Annual Revenue). 
 ```{r}
-tsdftemp <- tsdf[tsdf$product_category_name_english %in% top80sales$product_category_name_english,] %>% 
-  mutate(total_revenue = revenue*sales_volume) 
+tsdftemp <- tsdf[tsdf$product_category_name_english %in% top80sales$product_category_name_english,] 
 
-sum(tsdftemp$total_revenue)/nrow(tsdftemp)*365
+tmp1 <- tsdftemp %>% group_by(order_purchase_timestamp) %>% summarise(revenue = sum(revenue))
+sum(tmp1$revenue)/nrow(tmp1)*365
 ```
 
 ```{r}
@@ -229,7 +229,7 @@ adf.test(diff1, nlag = 1)
 
 
 ## Training Arima Model
-Training cutoff is March 1st 2018 since we cant allow irregular cutoff for arima.
+Training cutoff is May 1st 2018 since we cant allow irregular cutoff for arima.
 ```{r, warning = FALSE, message = FALSE}
 tempdf <- tsdf80f %>% group_by(order_purchase_timestamp,day,month,dow) %>% summarise(sales_volume=sum(sales_volume))
 #adding the holiday calendar information
@@ -493,29 +493,21 @@ fcst
 ```
 
 
-```{r, warning=FALSE,message=FALSE}
+```{r}
+fcst_actual_df <- read.csv("~/Documents/ecommerce_sales_forecasting/app/actfc_df.csv")
+fcst_actual_df <- fcst_actual_df %>% mutate(price_per_itm = revenue/sales_volume,
+                                            yhat = ifelse(yhat<0,0,yhat),
+                                            fcst_act_var = ifelse(yhat<0,0,yhat)-sales_volume)
+fcst_actual_df <- fcst_actual_df %>% mutate(var_dollar=fcst_act_var*price_per_itm)
+fcst_actual_top <- fcst_actual_df %>% group_by(order_purchase_timestamp) %>% 
+  summarise(lost_sales = sum(ifelse(var_dollar<0,var_dollar,0)))
+
+#fcst_actual_top[fcst_actual_top$order_purchase_timestamp >= as.Date('2018-05-01'),]
+abs(sum(fcst_actual_top$lost_sales)/nrow(fcst_actual_top)*365)
 ```
-
-
 
 ```{r}
-fcst_actual_df <- right_join(tsdf80,fcst, by=c("order_purchase_timestamp"="ds","product_category_name_english"), copy=FALSE)
-fc_act_noNA <- na.omit(fcst_actual_df) %>% mutate(lost_sales = ifelse(yhat-sales_volume < 0,0,abs(yhat-sales_volume)),
-                                             lost_revenue = ifelse(yhat-sales_volume < 0,0,abs(yhat-sales_volume))*revenue)
-sum(fc_act_noNA$lost_revenue)/nrow(fc_act_noNA)*365 #the average annual lost revenue saved
+
+1213884*2
 ```
 
-
-```{r, warning = FALSE, message=FALSE}
-fcst_actual_df %>%
-  group_by(order_purchase_timestamp) %>% summarise(actual = sum(sales_volume),
-                             forecast = sum(yhat)) %>%
-                                  gather(key = "type", value = "value", - order_purchase_timestamp) %>%
-  ggplot(aes(order_purchase_timestamp,value, color = type)) +
-  geom_line() + 
-  ggtitle("Sales Volume Forecast vs Actual from 2017 to 2018") +
-  scale_x_date(date_labels = "%m-%Y") +
-  scale_color_manual(values=c("#213ee2", "#06d997")) +
-  theme(plot.title = element_text(size = 22, face = "bold"))
-  
-```

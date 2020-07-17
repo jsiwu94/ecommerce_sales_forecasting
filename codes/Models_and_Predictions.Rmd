@@ -175,7 +175,7 @@ tsdf80f <- tsdf80 %>% mutate(dow = wday(order_purchase_timestamp, label=TRUE),
                               day = day(order_purchase_timestamp)) 
 
 
-monthtemp <- tsdf80f %>% group_by(month) %>% summarise(sales_volume= sum(sales_volume)) 
+monthtemp <- tsdf80f[tsdf80f$order_purchase_timestamp < '2018-01-01',] %>% group_by(month) %>% summarise(sales_volume= sum(sales_volume)) 
 
 temp <- tsdf80f %>% group_by(dow) %>% summarise(sales_volume= sum(sales_volume)) 
 temp$dow <- ordered(temp$dow, levels=c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
@@ -186,18 +186,18 @@ daytemp <- tsdf80f %>% group_by(day) %>% summarise(sales_volume= sum(sales_volum
 ggplot(monthtemp, aes(x=month, y=sales_volume, group = 1)) +
   geom_line(color = "#213ee2",size=1.5) + 
   geom_point(color = "#06d997",size=5)+
-  ggtitle("Yearly Trend") +
+  ggtitle("Yearly Seasonality") +
   theme(plot.title = element_text(size = 22, face = "bold"))
 
 ggplot(daytemp, aes(x=day, y=sales_volume, group = 1)) +
   geom_line(color = "#043e83",size=1) + 
   geom_point(color = "#a49cf8",size=4)+
-  ggtitle("Monthly Trend") +
+  ggtitle("Monthly Seasonality") +
   theme(plot.title = element_text(size = 22, face = "bold"))
 
 ggplot(temp, aes(x=dow, y=sales_volume,fill=dow)) +
   geom_bar(position="dodge", stat="identity") + 
-  ggtitle("Weekly Trend") +
+  ggtitle("Weekly Seasonality") +
   scale_fill_manual(values=c("#213ee2","#a49cf8","#5071dd","#88b0e4","#06d997","#046a41","#043e83")) +
   theme(plot.title = element_text(size = 22, face = "bold"))
 ```
@@ -301,7 +301,7 @@ fc.reg %>%
 # ARIMA + LM
 ```{r}
 fit.arlm <- traintsb %>% 
-        model(tuned_lm_arima = ARIMA(sales_volume ~ month + weekday + holiday + day + trend() + fourier(period = "week",1)
+        model(SARIMAX = ARIMA(sales_volume ~ month + weekday + holiday + day + trend() + fourier(period = "week",1)
                                      + fourier(period = "month",3) + fourier(period = "year",5)))
 fit.arlm %>% report()
 
@@ -310,7 +310,7 @@ fc.arlm %>% accuracy(testtsb)
 
 fc.arlm %>% 
   autoplot(alltsb, level =NULL) +
-  ggtitle("Forecasts vs Actual for Top 80 Sales Products - TSLM") +
+  ggtitle("Forecasts vs Actual for Top 80 Sales Products - SARIMAX") +
   xlab("Year") +
   guides(colour = guide_legend(title = "Forecast"))
 ```
@@ -318,8 +318,8 @@ fc.arlm %>%
 # Combining all 
 ```{r, warning=FALSE}
 fit <- traintsb %>% 
-        model(tuned_arima = ARIMA(sales_volume ~ 0 + pdq(4, 1, 2) + PDQ(0, 1, 1, period = 7)),
-              tuned_lm_arima =  ARIMA(sales_volume ~ month + weekday + holiday + day + trend() + fourier(period = "week",1)+
+        model(sarima = ARIMA(sales_volume ~ 0 + pdq(4, 1, 2) + PDQ(0, 1, 1, period = 7)),
+              sarimax =  ARIMA(sales_volume ~ month + weekday + holiday + day + trend() + fourier(period = "week",1)+
                                 fourier(period = "month",3) + fourier(period = "year",5)),
               ets = ETS(sales_volume, opt_crit = "mse"),
               tslm = TSLM(sales_volume ~ month + trend() + season("week") + fourier(period = "month",3)))
@@ -341,9 +341,7 @@ fc %>%
 
 
 ```{r}
-fit_ensemble <- traintsb %>% model(ensemble = (ARIMA(sales_volume ~ month + weekday + holiday + day + trend() + 
-                                                       fourier(period = "week",1)+fourier(period = "month",3) + 
-                                                       fourier(period = "year",5)) +
+fit_ensemble <- traintsb %>% model(ensemble = (ARIMA(sales_volume ~ 0 + pdq(4, 1, 2) + PDQ(0, 1, 1, period = 7))+
                                                ETS(sales_volume))/2)
 
 fc_ensemble <- fit_ensemble %>% predict(testtsb)
@@ -454,64 +452,6 @@ sqrt(sum((forecastm2$yhat[(nrow(train)+1):nrow(forecastm2)]-test$sales_volume)**
 ```
 
 
-# Final Forecast
-```{r, warning=FALSE,message=FALSE}
-#preparing the data by product category level, will join back with "tsdf80" later 
-
-proddf <- tsdf80 %>% ungroup() %>% mutate(ds = order_purchase_timestamp, y = sales_volume) %>% 
-                                select (-c(order_purchase_timestamp,sales_volume,revenue)) 
-
-make_forecast <- function(df) {
-  m <- prophet(growth="linear",
-              holidays = hldydf,
-              daily.seasonality=FALSE, 
-              yearly.seasonality = FALSE, 
-              weekly.seasonality = FALSE,
-              seasonality.mode = "multiplicative",
-              changepoint.prior.scale = 0.04,
-              seasonality.prior.scale = 20,
-              holidays.prior.scale = 35)
-  m <- add_seasonality(m, name="monthly", period=30.5,fourier.order = 45)
-  m <- add_seasonality(m, name="weekly",period=7,fourier.order = 20)
-  m <- add_seasonality(m, name="yearly", period=365.25,fourier.order = 20)
-  m <-  add_seasonality(m, name="quarter", period=365.25/4, fourier.order = 5,prior.scale = 15)
-  m <- fit.prophet(m, df)
-  
-  future <- make_future_dataframe(m, periods = 30, freq = 'day')
-  fcst <- predict(m, future)
-  return(fcst)
-}
-
-fcst <- proddf %>%  
-  group_by(product_category_name_english) %>%
-  do(make_forecast(.)) %>% 
-  dplyr::select(ds, product_category_name_english, yhat)
-```
-
-
-```{r}
-fcst_actual_df <- right_join(tsdf80,fcst, by=c("order_purchase_timestamp"="ds","product_category_name_english"), copy=FALSE)
-fc_act_noNA <- na.omit(fcst_actual_df) %>% mutate(lost_sales = ifelse(yhat-sales_volume < 0,0,abs(yhat-sales_volume)),
-                                             lost_revenue = ifelse(yhat-sales_volume < 0,0,abs(yhat-sales_volume))*revenue)
-sum(fc_act_noNA$lost_revenue)/nrow(fc_act_noNA)*365 #the average annual lost revenue saved
-```
-
-
-```{r, warning = FALSE, message=FALSE}
-fcst_actual_df %>%
-  group_by(order_purchase_timestamp) %>% summarise(actual = sum(sales_volume),
-                             forecast = sum(yhat)) %>%
-                                  gather(key = "type", value = "value", - order_purchase_timestamp) %>%
-  ggplot(aes(order_purchase_timestamp,value, color = type)) +
-  geom_line() + 
-  ggtitle("Sales Volume Forecast vs Actual from 2017 to 2018") +
-  scale_x_date(date_labels = "%m-%Y") +
-  scale_color_manual(values=c("#213ee2", "#06d997")) +
-  theme(plot.title = element_text(size = 22, face = "bold"))
-  
-```
-
-
 # Making the Final Prediction by Product Category
 ```{r, warning=FALSE,message=FALSE}
 #preparing the data by product category level, will join back with "tsdf80" later 
@@ -544,20 +484,41 @@ make_prediction <- function(model) {
 final_df <- proddf %>%  
            nest(-product_category_name_english) %>%
            mutate(model= map(data, make_forecast)) %>%
-          mutate()
+final_df <- final_df %>% mutate(pred = map(model, make_prediction))
+#saveRDS(final_df, "model_nested_df.rds")
+
+
+fcst_unnest <- unnest(final_df,pred)
+fcst_data <- fcst_unnest %>% select(product_category_name_english,ds,yhat)
 ```
 
+# Joining back to The "Actual" Data to Create the Comparison Plot
 ```{r}
-setwd("~/Documents/ecommerce_sales_forecasting/")
-saveRDS(final_df, "model_nested_df.rds")
+fcst_actual_df <- right_join(tsdf80,fcst_data, by=c("order_purchase_timestamp"="ds","product_category_name_english"), copy=FALSE)
+
+
+fcst_actual_df %>%
+  group_by(order_purchase_timestamp) %>% summarise(actual = sum(sales_volume),
+                             forecast = sum(yhat)) %>%
+                                  gather(key = "type", value = "value", - order_purchase_timestamp) %>%
+  ggplot(aes(order_purchase_timestamp,value, color = type)) +
+  geom_line() + 
+  ggtitle("Sales Volume Forecast vs Actual from 2017 to 2018") +
+  scale_x_date(date_labels = "%m-%Y") +
+  scale_color_manual(values=c("#213ee2", "#06d997")) +
+  theme(plot.title = element_text(size = 22, face = "bold"))
 ```
 
+
+# Lost Sales Calculation
 ```{r}
-#final_df %>% mutate(pred = map(model, make_prediction))
-tempdfdf <- final_df %>% mutate(pred = map(model, make_prediction))
-fcst_unnest <- unnest(tempdfdf,pred)
-fcst_data <- fcst_unnest %>% select(product_category_name_english,ds,yhat) %>% group_by(ds) %>% summarise(forecast = sum(yhat))
+fcst_actual_df <- fcst_actual_df %>% mutate(price_per_itm = revenue/sales_volume,
+                                            yhat = ifelse(yhat<0,0,yhat),
+                                            fcst_act_var = ifelse(yhat<0,0,yhat)-sales_volume)
+fcst_actual_df <- fcst_actual_df %>% mutate(var_dollar=fcst_act_var*price_per_itm)
+fcst_actual_top <- fcst_actual_df %>% group_by(order_purchase_timestamp) %>% 
+  summarise(lost_sales = sum(ifelse(var_dollar<0,var_dollar,0)))
+paste("estimated annual lost sales from this model :",abs(sum(fcst_actual_top$lost_sales)/nrow(fcst_actual_top)*365))
 ```
-
 
 
